@@ -9,10 +9,16 @@ use verified::{CheckedRangeU32, RangeRequestU32};
 
 use crate::buffer::{AlignedBuf, align_down_u64, align_up_u32, align_up_u64};
 use crate::error::{Error, Result};
-use crate::io_worker::IoWorker;
 use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::wal::Wal;
 use crate::{PAGE_SIZE_NZ_U32, PAGE_SIZE_U64};
+
+#[cfg(feature = "io-uring")]
+#[cfg(target_os = "linux")]
+use crate::io::uring::IoWorker;
+
+#[cfg(not(target_os = "linux"))]
+use crate::io::epoll::IoWorker;
 
 #[derive(Debug, Clone, Copy)]
 pub struct MountOptions {
@@ -44,9 +50,19 @@ impl T4Store {
         open.read(true).write(true).create(true);
 
         let mut custom_flags = 0;
+
+        #[cfg(target_os = "linux")]
         if options.direct_io {
             custom_flags = custom_flags | libc::O_DIRECT;
         }
+
+        #[cfg(not(target_os = "linux"))]
+        if options.direct_io {
+            return Err(Error::InvalidArgument(
+                "direct_io not supported on target_os",
+            ));
+        }
+
         if options.dsync {
             custom_flags = custom_flags | libc::O_DSYNC;
         }

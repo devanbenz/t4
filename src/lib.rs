@@ -3,8 +3,7 @@
 pub mod art;
 mod buffer;
 mod error;
-mod io_task;
-mod io_worker;
+mod io;
 mod store;
 mod sync;
 mod wal;
