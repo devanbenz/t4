@@ -8,9 +8,9 @@ use verified::input_kv::{T4Key, T4KeyRef, T4Value, ValueRef};
 use verified::{CheckedRangeU32, RangeRequestU32};
 
 use crate::buffer::{AlignedBuf, align_down_u64, align_up_u32, align_up_u64};
-use crate::error::{Error, Result};
-use crate::io::uring::IoWorker;
-use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use crate::io::error::{Error, Result};
+use crate::io::io_uring::IoWorker;
+use crate::io::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::wal::Wal;
 use crate::{PAGE_SIZE_NZ_U32, PAGE_SIZE_U64};
 

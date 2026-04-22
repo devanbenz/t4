@@ -3,13 +3,14 @@ use std::fmt;
 use std::fs::File;
 use std::num::NonZeroU32;
 use std::os::fd::AsRawFd;
+use std::thread::spawn;
 
 use io_uring::{IoUring, opcode, types};
 
 use crate::buffer::AlignedBuf;
-use crate::error::{Error, Result};
-use crate::sync::Arc;
-use crate::sync::mpsc;
+use crate::io::error::{Error, Result};
+use crate::io::sync::Arc;
+use crate::io::sync::mpsc;
 
 use super::common::{
     CompletionEvent, InflightRequest, InflightRequestKind, RequestId, complete_request_with_error,
@@ -185,7 +186,7 @@ impl<D: IoDriver> UringBackend<D> {
 
             self.poll_completions();
 
-            crate::sync::cooperative_yield();
+            crate::io::sync::cooperative_yield();
         }
     }
 
@@ -511,7 +512,7 @@ impl IoWorker {
         let (tx, rx) = mpsc::channel::<WorkerRequest>();
         let (init_tx, init_rx) = mpsc::sync_channel::<Result<()>>(1);
 
-        crate::sync::spawn(move || {
+        spawn(move || {
             let backend = match UringBackend::new(file, queue_depth, rx) {
                 Ok(backend) => {
                     let _ = init_tx.send(Ok(()));

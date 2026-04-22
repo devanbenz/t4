@@ -2,7 +2,7 @@ use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::num::NonZeroU32;
 use std::ptr::NonNull;
 
-use crate::error::{Error, Result};
+use crate::io::error::{Error, Result};
 use crate::{PAGE_SIZE, PAGE_SIZE_NZ_U32};
 
 pub use verified::{align_down_u64, align_up_u64};

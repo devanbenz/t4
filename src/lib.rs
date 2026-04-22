@@ -2,18 +2,16 @@
 
 pub mod art;
 mod buffer;
-mod error;
 mod io;
 mod store;
-mod sync;
 mod wal;
 
 use std::{num::NonZeroU32, path::Path};
 
+use crate::io::sync::Arc;
 use crate::store::T4Store;
-use crate::sync::Arc;
 
-pub use error::{Error, Result};
+pub use io::error::{Error, Result};
 pub use store::MountOptions;
 use verified::input_kv::{T4Key, T4KeyRef, T4Value};
 

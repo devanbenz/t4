@@ -1,5 +1,5 @@
 use crate::buffer::AlignedBuf;
-use crate::error::{Error, Result};
+use crate::io::error::{Error, Result};
 
 use super::io_task::{FsyncCompletion, PageWrite, ReadCompletion, WorkerRequest, WriteCompletion};
 

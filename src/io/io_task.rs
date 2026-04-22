@@ -3,10 +3,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
 use crate::buffer::AlignedBuf;
-use crate::error::{Error, Result};
-use crate::sync::cooperative_yield;
-use crate::sync::mpsc;
-use crate::sync::{Arc, Mutex};
+use crate::io::error::{Error, Result};
+use crate::io::sync::cooperative_yield;
+use crate::io::sync::mpsc;
+use crate::io::sync::{Arc, Mutex};
 
 pub(crate) type ReadCompletion = Arc<TaskCompletion<(AlignedBuf, usize)>>;
 pub(crate) type WriteCompletion = Arc<TaskCompletion<()>>;

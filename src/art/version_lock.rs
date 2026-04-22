@@ -5,7 +5,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use crate::sync::{
+use crate::io::sync::{
     atomic::{AtomicU64, Ordering},
     cooperative_yield,
 };
