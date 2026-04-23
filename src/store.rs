@@ -9,6 +9,8 @@ use verified::{CheckedRangeU32, RangeRequestU32};
 
 use crate::buffer::{AlignedBuf, align_down_u64, align_up_u32, align_up_u64};
 use crate::io::error::{Error, Result};
+#[cfg(feature = "io-uring")]
+#[cfg(target_os = "linux")]
 use crate::io::io_uring::IoWorker;
 use crate::io::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::wal::Wal;
