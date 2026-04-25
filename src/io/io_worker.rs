@@ -11,10 +11,10 @@ use crate::io::sync::mpsc;
 use crate::{Error, Result};
 
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
-use crate::io::io_uring::UringBackend as Backend;
+use crate::io::io_uring::new_backend;
 
 #[cfg(not(all(feature = "io-uring", target_os = "linux")))]
-use crate::io::generic::GenericIoBackend as Backend;
+use crate::io::generic::new_backend;
 
 /// Handle to the I/O worker thread.
 ///
@@ -38,7 +38,7 @@ impl IoWorker {
         let (init_tx, init_rx) = mpsc::channel::<Result<()>>();
 
         spawn(move || {
-            let backend = match Backend::new(file, queue_depth, rx) {
+            let backend = match new_backend(file, queue_depth, rx) {
                 Ok(backend) => {
                     let _ = init_tx.send(Ok(()));
                     backend
