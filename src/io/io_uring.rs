@@ -22,17 +22,24 @@ impl UringDriver {
 fn build_sqe(entry: SubmissionEntry) -> io_uring::squeue::Entry {
     match entry {
         SubmissionEntry::Read {
-            fd,
+            file,
             buf_ptr,
             buf_len,
             offset,
             user_data,
-        } => opcode::Read::new(types::Fd(fd), buf_ptr, buf_len)
-            .offset(offset)
-            .build()
-            .user_data(user_data),
+        } => match file {
+            super::common::FileType::RawFd(fd) => {
+                opcode::Read::new(types::Fd(fd), buf_ptr, buf_len)
+                    .offset(offset)
+                    .build()
+                    .user_data(user_data)
+            }
+            super::common::FileType::File(_) => {
+                unimplemented!("io_uring uses raw file descriptor.")
+            }
+        },
         SubmissionEntry::Write {
-            fd,
+            file,
             buf_ptr,
             buf_len,
             offset,
@@ -44,15 +51,25 @@ fn build_sqe(entry: SubmissionEntry) -> io_uring::squeue::Entry {
             } else {
                 io_uring::squeue::Flags::IO_LINK
             };
-            opcode::Write::new(types::Fd(fd), buf_ptr, buf_len)
-                .offset(offset)
-                .build()
-                .flags(flags)
-                .user_data(user_data)
+            match file {
+                super::common::FileType::RawFd(fd) => {
+                    opcode::Write::new(types::Fd(fd), buf_ptr, buf_len)
+                        .offset(offset)
+                        .build()
+                        .flags(flags)
+                        .user_data(user_data)
+                }
+                super::common::FileType::File(_) => {
+                    unimplemented!("io_uring uses raw file descriptor.")
+                }
+            }
         }
-        SubmissionEntry::Fsync { fd, user_data } => opcode::Fsync::new(types::Fd(fd))
-            .build()
-            .user_data(user_data),
+        SubmissionEntry::Fsync { file, user_data } => match file {
+            super::common::FileType::RawFd(fd) => opcode::Fsync::new(types::Fd(fd))
+                .build()
+                .user_data(user_data),
+            super::common::FileType::File(_) => unimplemented!(),
+        },
     }
 }
 
@@ -91,6 +108,10 @@ impl IoDriver for UringDriver {
 
     fn wait_for_progress(&mut self, _request_rx: &mpsc::Receiver<WorkerRequest>) {
         crate::io::sync::cooperative_yield();
+    }
+
+    fn use_raw_fd(&mut self) -> bool {
+        true
     }
 }
 

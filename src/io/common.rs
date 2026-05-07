@@ -112,6 +112,7 @@ fn request_op_count(request: &WorkerRequest) -> usize {
 pub(crate) enum FileType {
     #[allow(dead_code)]
     RawFd(i32),
+    #[allow(dead_code)]
     File(Arc<File>),
 }
 
