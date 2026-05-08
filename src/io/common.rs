@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 
@@ -257,7 +258,14 @@ impl<D: IoDriver> BackendLoop<D> {
     fn submit_request(&mut self, request: WorkerRequest) -> Result<bool> {
         let request_id = self.allocate_request_id();
         let file = if self.driver.use_raw_fd() {
-            FileType::RawFd(self.file.as_raw_fd())
+            #[cfg(unix)]
+            {
+                FileType::RawFd(self.file.as_raw_fd())
+            }
+            #[cfg(not(unix))]
+            {
+                unreachable!("RawFd backend is only available on unix targets")
+            }
         } else {
             FileType::File(Arc::clone(&self.file))
         };
