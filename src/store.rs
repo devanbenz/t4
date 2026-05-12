@@ -1,16 +1,20 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::num::NonZeroU32;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 
 use verified::input_kv::{T4Key, T4KeyRef, T4Value, ValueRef};
 use verified::{CheckedRangeU32, RangeRequestU32};
 
 use crate::buffer::{AlignedBuf, align_down_u64, align_up_u32, align_up_u64};
-use crate::error::{Error, Result};
-use crate::io_worker::IoWorker;
-use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use crate::io::error::{Error, Result};
+use crate::io::io_worker::IoWorker;
+use crate::io::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::wal::Wal;
 use crate::{PAGE_SIZE_NZ_U32, PAGE_SIZE_U64};
 
@@ -43,14 +47,46 @@ impl T4Store {
         let mut open = OpenOptions::new();
         open.read(true).write(true).create(true);
 
-        let mut custom_flags = 0;
-        if options.direct_io {
-            custom_flags = custom_flags | libc::O_DIRECT;
+        #[cfg(target_os = "linux")]
+        {
+            let mut custom_flags: i32 = 0;
+            if options.direct_io {
+                custom_flags |= libc::O_DIRECT;
+            }
+            if options.dsync {
+                custom_flags |= libc::O_DSYNC;
+            }
+            open.custom_flags(custom_flags);
         }
-        if options.dsync {
-            custom_flags = custom_flags | libc::O_DSYNC;
+
+        #[cfg(all(unix, not(target_os = "linux")))]
+        {
+            if options.direct_io {
+                return Err(Error::InvalidArgument(
+                    "direct_io not supported on target_os",
+                ));
+            }
+            let mut custom_flags: i32 = 0;
+            if options.dsync {
+                custom_flags |= libc::O_DSYNC;
+            }
+            open.custom_flags(custom_flags);
         }
-        open.custom_flags(custom_flags);
+
+        #[cfg(windows)]
+        {
+            if options.direct_io {
+                return Err(Error::InvalidArgument(
+                    "direct_io not supported on target_os",
+                ));
+            }
+            let mut custom_flags: u32 = 0;
+            if options.dsync {
+                // FILE_FLAG_WRITE_THROUGH — Windows analogue of O_DSYNC.
+                custom_flags |= 0x8000_0000;
+            }
+            open.custom_flags(custom_flags);
+        }
 
         let file = open.open(path)?;
         let len = file.metadata()?.len();

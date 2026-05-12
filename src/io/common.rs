@@ -1,18 +1,14 @@
 use std::collections::HashMap;
-use std::fmt;
 use std::fs::File;
-use std::num::NonZeroU32;
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
-
-use io_uring::{IoUring, opcode, types};
+use std::sync::Arc;
 
 use crate::buffer::AlignedBuf;
-use crate::error::{Error, Result};
-use crate::io_task::{
-    FileFsyncTask, FileReadTask, FileWriteTask, PageWrite, WorkerRequest, worker_disconnected_error,
-};
-use crate::sync::Arc;
-use crate::sync::mpsc;
+use crate::io::error::{Error, Result};
+use crate::io::sync::mpsc;
+
+use super::io_task::{FsyncCompletion, PageWrite, ReadCompletion, WorkerRequest, WriteCompletion};
 
 fn worker_failed_error(message: impl Into<String>) -> Error {
     Error::Io(std::io::Error::other(message.into()))
@@ -25,12 +21,11 @@ fn complete_request_with_error(request: WorkerRequest, err: Error) {
         WorkerRequest::Fsync { completion, .. } => completion.complete(Err(err)),
     }
 }
-use crate::io_task::{FsyncCompletion, ReadCompletion, WriteCompletion};
 
 #[derive(Debug, Clone, Copy)]
-struct CompletionEvent {
-    user_data: u64,
-    result: i32,
+pub(crate) struct CompletionEvent {
+    pub(crate) user_data: u64,
+    pub(crate) result: i32,
 }
 
 fn decode_cqe_result(result: i32) -> Result<usize> {
@@ -38,112 +33,6 @@ fn decode_cqe_result(result: i32) -> Result<usize> {
         return Err(Error::Io(std::io::Error::from_raw_os_error(-result)));
     }
     Ok(result as usize)
-}
-
-struct UringDriver {
-    ring: IoUring,
-}
-
-trait IoDriver {
-    fn available_submission_slots(&mut self) -> usize;
-    fn push(&mut self, entry: io_uring::squeue::Entry) -> Result<()>;
-    fn submit(&mut self) -> Result<usize>;
-    fn pop_completion(&mut self) -> Option<CompletionEvent>;
-}
-
-struct ReadEntry<'a> {
-    fd: i32,
-    buf: &'a mut AlignedBuf,
-    offset: u64,
-    user_data: u64,
-}
-
-impl From<ReadEntry<'_>> for io_uring::squeue::Entry {
-    fn from(value: ReadEntry<'_>) -> Self {
-        opcode::Read::new(
-            types::Fd(value.fd),
-            value.buf.as_mut_ptr(),
-            value.buf.len_u32(),
-        )
-        .offset(value.offset)
-        .build()
-        .user_data(value.user_data)
-    }
-}
-
-struct WriteEntry<'a> {
-    fd: i32,
-    buf: &'a AlignedBuf,
-    offset: u64,
-    user_data: u64,
-    flags: io_uring::squeue::Flags,
-}
-
-impl From<WriteEntry<'_>> for io_uring::squeue::Entry {
-    fn from(value: WriteEntry<'_>) -> Self {
-        opcode::Write::new(types::Fd(value.fd), value.buf.as_ptr(), value.buf.len_u32())
-            .offset(value.offset)
-            .build()
-            .flags(value.flags)
-            .user_data(value.user_data)
-    }
-}
-
-struct FsyncEntry {
-    fd: i32,
-    user_data: u64,
-}
-
-impl From<FsyncEntry> for io_uring::squeue::Entry {
-    fn from(value: FsyncEntry) -> Self {
-        opcode::Fsync::new(types::Fd(value.fd))
-            .build()
-            .user_data(value.user_data)
-    }
-}
-
-impl UringDriver {
-    fn new(queue_depth: u32) -> Result<Self> {
-        Ok(Self {
-            ring: IoUring::new(queue_depth)?,
-        })
-    }
-
-    fn push_entry(&mut self, entry: io_uring::squeue::Entry) -> Result<()> {
-        let mut sq = self.ring.submission();
-        unsafe {
-            sq.push(&entry).map_err(|_| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::WouldBlock,
-                    "submission queue is full",
-                ))
-            })?;
-        }
-        Ok(())
-    }
-}
-
-impl IoDriver for UringDriver {
-    fn available_submission_slots(&mut self) -> usize {
-        let sq = self.ring.submission();
-        sq.capacity() - sq.len()
-    }
-
-    fn push(&mut self, entry: io_uring::squeue::Entry) -> Result<()> {
-        self.push_entry(entry)
-    }
-
-    fn submit(&mut self) -> Result<usize> {
-        Ok(self.ring.submit()?)
-    }
-
-    fn pop_completion(&mut self) -> Option<CompletionEvent> {
-        let mut cq = self.ring.completion();
-        cq.next().map(|cqe| CompletionEvent {
-            user_data: cqe.user_data(),
-            result: cqe.result(),
-        })
-    }
 }
 
 type RequestId = u32;
@@ -211,51 +100,92 @@ fn decode_user_data(user_data: u64) -> (RequestId, usize) {
     ((user_data >> 32) as RequestId, user_data as u32 as usize)
 }
 
-struct UringBackend<D: IoDriver> {
+fn request_op_count(request: &WorkerRequest) -> usize {
+    match request {
+        WorkerRequest::Read { .. } | WorkerRequest::Fsync { .. } => 1,
+        WorkerRequest::Write { writes, .. } => writes.len(),
+    }
+}
+
+/// FileType indicates whether our submission is using a raw file
+/// descriptor or a rust std library [File] type.
+#[derive(Clone)]
+pub(crate) enum FileType {
+    #[allow(dead_code)]
+    RawFd(i32),
+    #[allow(dead_code)]
+    File(Arc<File>),
+}
+
+/// Backend-agnostic submission record handed to a driver.
+pub(crate) enum SubmissionEntry {
+    Read {
+        file: FileType,
+        buf_ptr: *mut u8,
+        buf_len: u32,
+        offset: u64,
+        user_data: u64,
+    },
+    Write {
+        file: FileType,
+        buf_ptr: *const u8,
+        buf_len: u32,
+        offset: u64,
+        user_data: u64,
+        /// is_last_in_batch only required for io_uring backend
+        #[allow(dead_code)]
+        is_last_in_batch: bool,
+    },
+    Fsync {
+        file: FileType,
+        user_data: u64,
+    },
+}
+
+unsafe impl Send for SubmissionEntry {}
+
+pub(crate) trait IoDriver {
+    fn available_submission_slots(&mut self) -> usize;
+    fn push(&mut self, entry: SubmissionEntry) -> Result<()>;
+    /// Flush any staged submissions to the kernel. No-op for backends that
+    /// dispatch eagerly inside `push`.
+    fn submit(&mut self) -> Result<()>;
+    fn pop_completion(&mut self) -> Option<CompletionEvent>;
+    /// Block until either a new request lands on `request_rx` or some
+    /// inflight op completes. Only invoked when at least one op is inflight.
+    fn wait_for_progress(&mut self, request_rx: &mpsc::Receiver<WorkerRequest>);
+    /// Should this IoDriver use a raw file descriptor? Generally only used
+    /// for io_uring or on unix systems.
+    fn use_raw_fd(&mut self) -> bool;
+}
+
+pub(crate) struct BackendLoop<D: IoDriver> {
     receiver: mpsc::Receiver<WorkerRequest>,
-    file: File,
-    ring: D,
+    file: Arc<File>,
+    driver: D,
     queue_depth: usize,
     inflight_requests: HashMap<RequestId, InflightRequest>,
     next_request_id: RequestId,
 }
 
-impl UringBackend<UringDriver> {
-    fn new(file: File, queue_depth: u32, rx: mpsc::Receiver<WorkerRequest>) -> Result<Self> {
-        let ring = UringDriver::new(queue_depth)?;
-        Ok(UringBackend::with_driver(
-            file,
-            queue_depth as usize,
-            rx,
-            ring,
-        ))
-    }
-}
-
-impl<D: IoDriver> UringBackend<D> {
-    fn with_driver(
+impl<D: IoDriver> BackendLoop<D> {
+    pub(crate) fn new(
         file: File,
         queue_depth: usize,
         rx: mpsc::Receiver<WorkerRequest>,
-        ring: D,
+        driver: D,
     ) -> Self {
         Self {
             receiver: rx,
-            file,
-            ring,
+            file: Arc::new(file),
+            driver,
             queue_depth,
             inflight_requests: HashMap::new(),
             next_request_id: 0,
         }
     }
 
-    fn run(mut self) {
-        self.thread_loop();
-    }
-}
-
-impl<D: IoDriver> UringBackend<D> {
-    fn thread_loop(&mut self) {
+    pub(crate) fn run(mut self) {
         let mut pending_request = None;
         loop {
             let disconnected = match self.submit_requests(&mut pending_request) {
@@ -271,7 +201,14 @@ impl<D: IoDriver> UringBackend<D> {
 
             self.poll_completions();
 
-            crate::sync::cooperative_yield();
+            if self.inflight_requests.is_empty() && pending_request.is_none() {
+                match self.receiver.recv() {
+                    Ok(request) => pending_request = Some(request),
+                    Err(_) => return,
+                }
+            } else {
+                self.driver.wait_for_progress(&self.receiver);
+            }
         }
     }
 
@@ -302,7 +239,7 @@ impl<D: IoDriver> UringBackend<D> {
                 );
                 continue;
             }
-            if self.ring.available_submission_slots() < op_count {
+            if self.driver.available_submission_slots() < op_count {
                 *pending_request = Some(request);
                 break;
             }
@@ -312,7 +249,7 @@ impl<D: IoDriver> UringBackend<D> {
         }
 
         if submitted_any {
-            let _ = self.ring.submit()?;
+            self.driver.submit()?;
         }
 
         Ok(false)
@@ -320,6 +257,18 @@ impl<D: IoDriver> UringBackend<D> {
 
     fn submit_request(&mut self, request: WorkerRequest) -> Result<bool> {
         let request_id = self.allocate_request_id();
+        let file = if self.driver.use_raw_fd() {
+            #[cfg(unix)]
+            {
+                FileType::RawFd(self.file.as_raw_fd())
+            }
+            #[cfg(not(unix))]
+            {
+                unreachable!("RawFd backend is only available on unix targets")
+            }
+        } else {
+            FileType::File(Arc::clone(&self.file))
+        };
         match request {
             WorkerRequest::Read {
                 buf,
@@ -347,15 +296,14 @@ impl<D: IoDriver> UringBackend<D> {
                     let InflightRequestKind::Read { buf, .. } = &mut request.kind else {
                         unreachable!("request kind changed while submitting read");
                     };
-                    self.ring.push(
-                        ReadEntry {
-                            fd: self.file.as_raw_fd(),
-                            buf: buf.as_mut().expect("read buffer missing while submitting"),
-                            offset,
-                            user_data: encode_user_data(request_id, 0),
-                        }
-                        .into(),
-                    )
+                    let buf = buf.as_mut().expect("read buffer missing while submitting");
+                    self.driver.push(SubmissionEntry::Read {
+                        file,
+                        buf_ptr: buf.as_mut_ptr(),
+                        buf_len: buf.len_u32(),
+                        offset,
+                        user_data: encode_user_data(request_id, 0),
+                    })
                 };
                 self.finish_single_submit(request_id, push_result)
             }
@@ -369,13 +317,10 @@ impl<D: IoDriver> UringBackend<D> {
                     },
                 );
 
-                let push_result = self.ring.push(
-                    FsyncEntry {
-                        fd: self.file.as_raw_fd(),
-                        user_data: encode_user_data(request_id, 0),
-                    }
-                    .into(),
-                );
+                let push_result = self.driver.push(SubmissionEntry::Fsync {
+                    file,
+                    user_data: encode_user_data(request_id, 0),
+                });
                 self.finish_single_submit(request_id, push_result)
             }
             WorkerRequest::Write { writes, completion } => {
@@ -406,26 +351,18 @@ impl<D: IoDriver> UringBackend<D> {
                         let page = pages
                             .get(index)
                             .expect("write page missing while submitting");
-                        self.ring.push(
-                            WriteEntry {
-                                fd: self.file.as_raw_fd(),
-                                buf: &page.buf,
-                                offset: page.offset,
-                                user_data: encode_user_data(request_id, index),
-                                flags: if is_last {
-                                    io_uring::squeue::Flags::empty()
-                                } else {
-                                    io_uring::squeue::Flags::IO_LINK
-                                },
-                            }
-                            .into(),
-                        )
+                        self.driver.push(SubmissionEntry::Write {
+                            file: file.clone(),
+                            buf_ptr: page.buf.as_ptr(),
+                            buf_len: page.buf.len_u32(),
+                            offset: page.offset,
+                            user_data: encode_user_data(request_id, index),
+                            is_last_in_batch: is_last,
+                        })
                     };
 
                     match push_result {
-                        Ok(()) => {
-                            submitted_pages = submitted_pages + 1;
-                        }
+                        Ok(()) => submitted_pages += 1,
                         Err(err) => {
                             self.handle_write_submit_error(request_id, submitted_pages, err);
                             return Ok(submitted_pages > 0);
@@ -439,9 +376,8 @@ impl<D: IoDriver> UringBackend<D> {
     }
 
     fn poll_completions(&mut self) {
-        while let Some(cqe) = self.ring.pop_completion() {
+        while let Some(cqe) = self.driver.pop_completion() {
             let (request_id, op_index) = decode_user_data(cqe.user_data);
-            let mut should_complete = false;
 
             let Some(request) = self.inflight_requests.get_mut(&request_id) else {
                 debug_assert!(false, "missing inflight request for cqe {}", cqe.user_data);
@@ -490,13 +426,9 @@ impl<D: IoDriver> UringBackend<D> {
             }
 
             if request.remaining > 0 {
-                request.remaining = request.remaining - 1;
+                request.remaining -= 1;
             }
             if request.remaining == 0 {
-                should_complete = true;
-            }
-
-            if should_complete {
                 let request = self
                     .inflight_requests
                     .remove(&request_id)
@@ -572,80 +504,5 @@ impl<D: IoDriver> UringBackend<D> {
                 return self.next_request_id;
             }
         }
-    }
-}
-
-fn request_op_count(request: &WorkerRequest) -> usize {
-    match request {
-        WorkerRequest::Read { .. } | WorkerRequest::Fsync { .. } => 1,
-        WorkerRequest::Write { writes, .. } => writes.len(),
-    }
-}
-
-/// Handle to the I/O worker thread.
-///
-/// Cloning shares the same underlying worker. The worker thread exits
-/// automatically once every clone is dropped (channel disconnects).
-#[derive(Clone)]
-pub struct IoWorker {
-    tx: Arc<mpsc::Sender<WorkerRequest>>,
-}
-
-impl fmt::Debug for IoWorker {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("IoWorker").finish_non_exhaustive()
-    }
-}
-
-impl IoWorker {
-    pub fn new(queue_depth: NonZeroU32, file: File) -> Result<Self> {
-        let queue_depth = queue_depth.get();
-
-        let (tx, rx) = mpsc::channel::<WorkerRequest>();
-        let (init_tx, init_rx) = mpsc::sync_channel::<Result<()>>(1);
-
-        crate::sync::spawn(move || {
-            let backend = match UringBackend::new(file, queue_depth, rx) {
-                Ok(backend) => {
-                    let _ = init_tx.send(Ok(()));
-                    backend
-                }
-                Err(err) => {
-                    let _ = init_tx.send(Err(err));
-                    return;
-                }
-            };
-            backend.run();
-        });
-
-        match init_rx.recv() {
-            Ok(Ok(())) => Ok(Self { tx: Arc::new(tx) }),
-            Ok(Err(err)) => Err(err),
-            Err(_) => Err(worker_disconnected_error()),
-        }
-    }
-
-    pub fn read_at(&self, buf: AlignedBuf, offset: u64) -> FileReadTask {
-        FileReadTask::new((*self.tx).clone(), buf, offset)
-    }
-
-    pub fn write(&self, writes: Vec<PageWrite>) -> FileWriteTask {
-        FileWriteTask::new((*self.tx).clone(), writes)
-    }
-
-    pub fn fsync(&self) -> FileFsyncTask {
-        FileFsyncTask::new((*self.tx).clone())
-    }
-
-    pub async fn read_exact_at(&self, buf: AlignedBuf, offset: u64) -> Result<AlignedBuf> {
-        let expected = buf.len();
-        let (buf, n) = self.read_at(buf, offset).await?;
-        if n != expected {
-            return Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                format!("short read: expected {expected}, got {n}"),
-            )));
-        }
-        Ok(buf)
     }
 }

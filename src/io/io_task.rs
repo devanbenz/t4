@@ -3,19 +3,19 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
 use crate::buffer::AlignedBuf;
-use crate::error::{Error, Result};
-use crate::sync::cooperative_yield;
-use crate::sync::mpsc;
-use crate::sync::{Arc, Mutex};
+use crate::io::error::{Error, Result};
+use crate::io::sync::cooperative_yield;
+use crate::io::sync::mpsc;
+use crate::io::sync::{Arc, Mutex};
 
 pub(crate) type ReadCompletion = Arc<TaskCompletion<(AlignedBuf, usize)>>;
 pub(crate) type WriteCompletion = Arc<TaskCompletion<()>>;
 pub(crate) type FsyncCompletion = Arc<TaskCompletion<()>>;
 
 #[derive(Debug)]
-pub(crate) struct PageWrite {
-    pub(crate) buf: AlignedBuf,
-    pub(crate) offset: u64,
+pub struct PageWrite {
+    pub buf: AlignedBuf,
+    pub offset: u64,
 }
 
 pub(crate) struct TaskCompletion<T> {
@@ -119,7 +119,7 @@ struct PendingRead {
     offset: u64,
 }
 
-pub(crate) struct FileReadTask {
+pub struct FileReadTask {
     state: FileReadTaskState,
 }
 
@@ -182,7 +182,7 @@ struct PendingWrite {
     writes: Option<Vec<PageWrite>>,
 }
 
-pub(crate) struct FileWriteTask {
+pub struct FileWriteTask {
     state: FileWriteTaskState,
 }
 
@@ -242,7 +242,7 @@ struct PendingFsync {
     tx: mpsc::Sender<WorkerRequest>,
 }
 
-pub(crate) struct FileFsyncTask {
+pub struct FileFsyncTask {
     state: FileFsyncTaskState,
 }
 

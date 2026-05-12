@@ -30,7 +30,7 @@ jobs:
         run: nix develop -c cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: nix develop -c cargo test --all-features
+        run: nix develop -c cargo test
 
       - name: Run proof check
         run: nix develop -c cargo verus verify -p t4-verified

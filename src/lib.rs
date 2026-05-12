@@ -2,21 +2,26 @@
 
 pub mod art;
 mod buffer;
-mod error;
-mod io_task;
-mod io_worker;
+mod io;
 mod store;
-mod sync;
 mod wal;
 
 use std::{num::NonZeroU32, path::Path};
 
+use crate::io::sync::Arc;
 use crate::store::T4Store;
-use crate::sync::Arc;
 
-pub use error::{Error, Result};
+pub use io::error::{Error, Result};
 pub use store::MountOptions;
 use verified::input_kv::{T4Key, T4KeyRef, T4Value};
+
+#[cfg(feature = "__bench")]
+#[doc(hidden)]
+pub mod __bench {
+    pub use crate::buffer::AlignedBuf;
+    pub use crate::io::io_task::PageWrite;
+    pub use crate::io::io_worker::IoWorker;
+}
 
 pub const PAGE_SIZE: usize = 4096;
 pub const PAGE_SIZE_U32: u32 = PAGE_SIZE as u32;

@@ -2,9 +2,7 @@
 #[cfg(all(not(feature = "shuttle"), test))]
 pub(crate) use std::thread::JoinHandle;
 
-#[cfg(not(feature = "shuttle"))]
-pub(crate) use std::thread::spawn;
-
+#[allow(unused_imports)]
 #[cfg(feature = "shuttle")]
 pub(crate) use shuttle::thread::spawn;
 
@@ -18,6 +16,7 @@ pub(crate) fn cooperative_yield() {
 #[inline]
 pub(crate) fn cooperative_yield() {}
 
+#[allow(unused_imports)]
 #[cfg(feature = "shuttle")]
 pub(crate) use shuttle::sync::*;
 
@@ -25,9 +24,17 @@ pub(crate) use shuttle::sync::*;
 #[allow(unused_imports)]
 pub(crate) use shuttle::thread;
 
-#[cfg(not(feature = "shuttle"))]
-pub(crate) use std::sync::*;
+#[cfg(not(all(feature = "shuttle", test)))]
+pub(crate) use std::sync::{
+    Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, atomic,
+};
 
 #[cfg(not(feature = "shuttle"))]
 #[allow(unused_imports)]
 pub(crate) use std::thread;
+
+#[cfg(not(all(feature = "shuttle", test)))]
+pub(crate) mod mpsc {
+    #[allow(unused_imports)]
+    pub use crossbeam_channel::{Receiver, SendError, Sender, TryRecvError, unbounded as channel};
+}
