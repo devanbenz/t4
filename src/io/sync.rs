@@ -2,6 +2,7 @@
 #[cfg(all(not(feature = "shuttle"), test))]
 pub(crate) use std::thread::JoinHandle;
 
+#[allow(unused_imports)]
 #[cfg(feature = "shuttle")]
 pub(crate) use shuttle::thread::spawn;
 
@@ -15,6 +16,7 @@ pub(crate) fn cooperative_yield() {
 #[inline]
 pub(crate) fn cooperative_yield() {}
 
+#[allow(unused_imports)]
 #[cfg(feature = "shuttle")]
 pub(crate) use shuttle::sync::*;
 

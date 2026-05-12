@@ -65,6 +65,7 @@ impl AlignedBuf {
         Ok(buf)
     }
 
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.len_u32.get() as usize
     }

@@ -56,7 +56,7 @@ impl T4Store {
             if options.dsync {
                 custom_flags |= libc::O_DSYNC;
             }
-            open.custom_flags(custom_flags as i32);
+            open.custom_flags(custom_flags);
         }
 
         #[cfg(all(unix, not(target_os = "linux")))]
